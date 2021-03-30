@@ -1,4 +1,5 @@
 MovieLens Recommendation System
+
 HarvardX Data Science Professional Certificate: PH125.9x Capstone project(1)
 
 This project was created within the HarvardX Data Science Professional Certificate. The objective of capstone-movielens project was to develop and an algorithm for a movie recommendation system using the MovieLens 10M dataset such that it was able to predict ratings with a residual mean square error of less than 0.86490.
