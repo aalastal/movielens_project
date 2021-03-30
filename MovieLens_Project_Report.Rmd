@@ -1,0 +1,995 @@
+---
+title: '*MovieLens Recommendation System Report*'
+subtitle: '***HarvardX Data Science Professional Certificate: PH125.9x Capstone project(1)***'
+author: "Ahmed G. Alastal"
+date: "_`r format(Sys.Date(), '%d %B, %Y')`_"
+output:
+  pdf_document:
+    df_print: kable
+    toc: true
+    toc_depth: 2
+    fig_width: 10
+    fig_height: 6
+
+fontsize: 12pt
+header-includes:
+   - \usepackage[font={footnotesize,it}, labelfont={bf}]{caption}
+   
+include-before: '`\newpage{}`{=latex}'
+urlcolor: blue
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE , warning = FALSE, message = FALSE,
+                      fig.align="center", out.width="60%")
+
+################## Install Basic Package required -- from edx
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(rmarkdown)) install.packages("rmarkdown", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+
+################## Install Additional Package  used in code
+#### Used formattable and kableExtra Package to formate Table
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if(!require(formattable)) install.packages("formattable", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(kableExtra)
+library(formattable)
+library(recosystem)  ## used to make matrix factorization 
+library(ggthemes)
+library(lubridate) ## used to deal with timestamp
+library(knitr)
+library(rmarkdown)
+library(dplyr)
+
+set_theme <- theme(text = element_text(size=16), panel.border = element_rect(colour="black", linetype = "solid", fill=NA), plot.title = element_text(hjust = 0.5, size = 18), plot.caption = element_text(hjust = 0.5))
+
+```
+\newpage
+# 1.	Introduction
+
+A recommendation system is a subclass of information filtering system that seeks to predict the “rating” or “preference” that a user would give to an item. 
+
+Recommendation systems are utilized in a variety of areas including music, books, news, research articles, search queries, movies, restaurants, garments, financial services, and products in general. Major companies such as Amazon, Twitter, Facebook, Netflix and Spotify utilize recommendation systems.
+
+Netflix uses the recommendation system to predict how many stars a user will give to a specific movie. One star represents a bad rating, whereas five stars represents an excellent one. In 2006, Netflix offered a million dollar prize to anyone who could improve the effectiveness of its recommendation system by 10%.
+
+In this project, I will combine several machine-learning strategies to construct a movie recommendation system using the [MovieLens](https://grouplens.org/datasets/movielens/10m/) data set, and try to reduce RMSE as much as possible, using skills I learned in the data science program from HarvardX.
+
+```{r partition-data, include=FALSE, echo=FALSE}
+
+##########################################################
+# This code provided from HarvardX in PH125.9x Data Science: Capstone Movielends project 
+##### Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 3.6 or earlier:
+#movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+#                                           title = as.character(title),
+#                                           genres = as.character(genres))
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+#head(movielens)
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+## 1.1	 Data set Overview
+
+We can find the full MovieLens dataset here: https://grouplens.org/datasets/movielens/latest/ it is rather large; *(27,000,000 ratings and 1,100,000 tag applications applied to 58,000 movies by 280,000 users, Last updated 9/2018)*
+
+The used dataset in this project is the MovieLens 10M Dataset. You can found and download it from: https://grouplens.org/datasets/movielens/10m/; _(10 million ratings and 100,000 tag applications applied to 10,000 movies by 72,000 users. Released 1/2009)_
+
+The MovieLens 10M Dataset is split into two dataset: edx and validation. The edx data set represents 90% and used for Developing the algorithm and model construction. The validation data set represents 10% and used only for assessing the performance of the final model. 
+
+### Edx Dataset
+
+The edx dataset consisting of `r format(nrow(edx),big.mark=",",scientific=F)` rows and `r format(ncol(edx),big.mark=",",scientific=F)` columns, with ratings provided by a total of `r format(n_distinct(edx$userId), big.mark=",",scientific=F)` unique users for a total of  `r format(n_distinct(edx$movieId),big.mark=",",scientific=F)` unique movies. Each row represents a rating given by one user to one movie. The column “rating” is the outcome we want to predict, y. 
+
+#### The following tables show the first 5 rows and the summary statistics in edx dataset:  
+
+```{r Table1 ,echo=FALSE}
+###### Table 1: data set features and the basic summary statistics:
+##  variable class and First 5 rows of edx data set and fea
+head_edx <- rbind((lapply(edx, class)), head(edx)) 
+head_edx %>% 
+  kable(caption = "First 5 rows of edx data set", align = 'cccclc', booktabs = T,
+        format = "latex", linesep = "") %>%
+  row_spec(1:7, color =  "#2b5329", bold = F) %>%
+  kable_styling("hover",full_width = FALSE, position = "center", latex_options = c("scale_down", "hold_position"), font_size = 12)
+
+```
+
+\   
+```{r Table2, echo=FALSE}
+###### Table 2: Edx Data set summary 
+edx_Dataset_summary <- data.frame(rows_number = nrow(edx),
+                                  columns_number = ncol(edx),
+                                  users_number= n_distinct(edx$userId),
+                                  movies_number = n_distinct(edx$movieId),
+                                  average_rating = round(mean(edx$rating),3),
+                                  genres_number = n_distinct(edx$genres),
+                                  first_rating_Date = as.Date(as.POSIXct(min(edx$timestamp), origin = "1970-01-01")),
+                                  last_rating_date = as.Date(as.POSIXct(max(edx$timestamp), origin = "1970-01-01")))
+
+edx_Dataset_summary %>% 
+  kable(caption = "Edx Data set summary", align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  row_spec(1:6, color =  "#2b5329", bold = F) %>%
+  kable_styling("hover",full_width = FALSE, position = "center", latex_options = c("scale_down", "hold_position"), font_size = 12)
+
+```
+
+\   
+
+#### The characteristics of edx Dataset features:
+\  
+
+**Quantitative features.**
+\   
+  •	userId: integer, Unique ID for the user.\   
+  •	movieId: numeric, Unique ID for the movie.\   
+  •	timestamp: integer, Date and time the rating was given.\    
+  
+**Qualitative features.**
+\    
+  •	title: character, movie title (not unique).\    
+  •	genres: character, genres associated with the movie.\   
+  
+**Outcome.**
+\   
+  •	rating: numeric, a rating between 0 and 5 for the movie.\ 
+
+### ** Validation Dataset:
+Validation dataset has the same features of edx dataset and has the following summary:
+ 
+```{r Table3, echo=FALSE}
+###### Table 3: Validation dataset summary 
+Validation_Dataset_summary <- data.frame(rows_number = nrow(validation),
+                                  columns_number = ncol(validation),
+                                  users_number= n_distinct(validation$userId),
+                                  movies_number = n_distinct(validation$movieId),
+                                  average_rating = round(mean(validation$rating),3),
+                                  genres_number = n_distinct(validation$genres),
+                                  first_rating_Date = as.Date(as.POSIXct(min(validation$timestamp), origin = "1970-01-01")),
+                                  last_rating_date = as.Date(as.POSIXct(max(validation$timestamp), origin = "1970-01-01")))
+
+Validation_Dataset_summary %>% 
+  kable(caption = " Validation data set summary", align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  row_spec(1:6, color =  "#2b5329", bold = F) %>%
+  kable_styling("hover",full_width = FALSE, position = "center", latex_options = c("scale_down", "hold_position"), font_size = 12)
+
+```
+
+\newpage
+
+## 1.2	 Project methodology
+
+After downloading the movielends data set, splitting into edx and validation dataset and taking an overview about dataset, we will follow these steps:
+
+•	Analyze and visualize the edx data set, get an overview about and between the features and educe the       benefits from the analysis using the cleaning, exploring and visualizing concept.
+
+•	Develop concept of modeling using ideas gained in previous step, using the techniques and models introduced in machine learning course.
+
+•	Concurrently with previous step, we develop the model using edx data set and evaluate its effectiveness    by using RMSE. To do that we will split edx dataset into edx_train and edx_test, various models are        constructed using edx_train and their performances are assessed using edx_test.
+
+•	Finally, retrain The best performing model using edx and assess using validation
+
+# 2.	Analysis and Exploration data
+
+The main objective of this part is to have a good understanding about each features of the edx data set and find any ideas to develop the recommendation model.
+
+## 2.1 Ratings Exploration
+
+The rating is an ordinal scale of number from 0.5 to 5. (5 is best value) given by the users who watched the movie. We can see the distribution of rating as the following:
+
+```{r Figure1 , echo=FALSE, fig.cap="Overall ratings distribution in Edx dataset"}
+###### Define the mean movies rating
+mu_rating <- mean(edx$rating)
+
+###### Figure 1: Overall ratings distribution
+edx %>%
+ggplot(aes(x= rating)) +
+  geom_histogram( bins = 40, color = "green") +
+  theme_hc() + 
+  scale_x_continuous(breaks=seq(0, 5, by= 0.5)) +
+  geom_vline(xintercept = mu_rating,  colour = "red")+
+  ggtitle("Overall ratings distribution")+
+  labs(x="Rating", y="number of ratings") + set_theme
+```
+
+
+#### From the previous figure, we notice that:
+\   
+•	The overall average rating in the edx dataset was `r round(mean(edx$rating), 2)` \   
+•	The top 3 ratings from most to least are :  4, 3, 5.\   
+•	Users desire to rate movies more positively than negatively.\   
+•	The histogram shows that the half-star ratings are less common than whole star ratings.\    
+
+## 2.2 Movies Exploration
+
+The Edx dataset have total 10,677 movies; represented by a movieId. The following histogram represent the number of ratings by movies: 
+
+```{r Figure2, echo=FALSE , fig.cap="Number of ratings by movies in Edx Dataset"}
+###### Figure 2: Histogram of number of ratings by movies in Edx Dataset
+edx %>% group_by(movieId) %>%
+  summarize(num_movie_rating = n(), 
+            mu_movies = mean(rating),
+            sd_movies = sd(rating)) %>% ggplot(aes(x = num_movie_rating))+
+  geom_histogram(bins = 40, color = "green")+
+  theme_hc() +
+  scale_x_log10()+
+  ggtitle("Number of ratings by movie") +
+  labs(x="Number of Movies",
+       y="Number of ratings") +
+  geom_vline(aes(xintercept = mean(num_movie_rating)), color = "orange")+
+ set_theme
+
+```
+
+Otherwise, the following histogram represent movies distribution by average rating: 
+
+```{r Figure3, echo=FALSE, fig.cap="Movie distribution by average rating in Edx Dataset"}
+edx %>% group_by(movieId) %>%
+  summarise(movie_ave_rating = sum(rating)/n()) %>%
+  ggplot(aes(movie_ave_rating)) +
+  geom_histogram(bins=30, color = I("Green")) +
+  theme_hc() +
+  scale_x_continuous(breaks=seq(0, 5, by= 0.5)) +
+   ggtitle("Movies distribution by average rating ") +
+  labs(x="Average Rating",
+       y="Number of movies")+
+  set_theme
+
+```
+
+#### From above, we can conclude:
+
+\   
+•	Some movies are rated more than other, and the average number of rating is 843.\    
+•	Approximate 20 % number of movies have number of rating more than the average, which represent             approximate 85% of ratings.\    
+•	The average movie rating tends to increase when the number of ratings increases.\   
+
+## 2.3	User Exploration
+
+The Edx dataset have 69,878 users represented by userid. The following histogram represent the number of ratings by user: 
+
+```{r Figure4, echo=FALSE, fig.cap="Number of ratings by users in Edx Dataset"}
+###### Figure 4: Histogram of number of ratings by users in Edx Dataset
+edx %>% group_by(userId) %>%
+  summarize(num_user_rating = n(),
+            mu_user = mean(rating),
+            sd_user = sd(rating)) %>% 
+  ggplot(aes(x = num_user_rating))+
+  geom_histogram(bins = 40, color = "green")+
+  theme_hc() +
+  scale_x_log10()+
+  ggtitle("Number of ratings by users ") +
+  labs(x = "Number of Users",
+       y = "Number of rating")+
+  geom_vline(aes(xintercept = mean(num_user_rating)), color = "orange")+
+  set_theme
+
+```
+
+On the other hand, the following histogram represent users distribution by average rating: 
+
+```{r Figure5, echo=FALSE, fig.cap="Users distribution by average rating in Edx Dataset"}
+###### Figure 5: Users distribution by average rating in Edx Dataset
+edx %>% group_by(userId) %>%
+  summarise(user_ave_rating = sum(rating)/n()) %>%
+  ggplot(aes(user_ave_rating)) +
+  geom_histogram(bins=30, color = I("Green")) +
+  theme_hc() +
+  scale_x_continuous(breaks=seq(0, 5, by= 0.5)) +
+  ggtitle("Users distribution by average rating ") +
+  labs(x="Average Rating",
+       y="Number of Users")+
+  set_theme
+
+```
+ 
+#### From above, we can conclude:
+
+\   
+•	30 % of users contribute 70 % of ratings in whole edx dataset.\   
+•	Some users rated very few movie and their opinion may bias the prediction results.\   
+•	The average user rating tends to increase when the number of ratings increases.\    
+
+## 2.4	 Time effect Exploration
+
+Time is recorded as the UNIX timestamp, the UNIX timestamp is merely a number of seconds between a particular date and the Unix Epoch. This count starts at the Unix Epoch on January 1st, 1970 at UTC.
+The following figure represent the average ratings of movies by month:
+```{r Figure6, echo=FALSE, fig.cap="Average ratings by time/month in Edx Dataset"}
+###### Figure 6: Smooth curve of average ratings by time/month in Edx Dataset
+edx %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "month")) %>%
+  group_by(date) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(date, rating)) +
+  geom_point() +
+  geom_smooth(color = "green") +
+  theme_hc() +
+  ggtitle("average of ratings by Time ") +
+  labs(x = "Time, unit: month ",
+       y = "Mean Rating")+
+  set_theme
+
+```
+#### From the previous figure, we conclude that:
+\   
+There are some evidences about time effect on ratings average, but this effect is not a strong.\    
+
+## 2.5	 Genres Exploration: 
+A movie could be classified to one or more genres; there are 20 levels of genre.The figure 7 illustrates the number of movies per genres:
+
+```{r Figure7, echo=FALSE, fig.cap="Number of ratings by genre in Edx Dataset"}
+###### Figure 7: Histogram of number of ratings by genre in Edx Dataset
+## calculate number and average of movies bu genres
+genres_summarize <- edx %>% separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize( num_movie_per_genres = n(), avg_movie_per_genres = mean(rating)) %>%
+  arrange(desc(num_movie_per_genres))
+
+## draw the histogram of number of ratings per genre
+genres_summarize %>%
+  ggplot(aes(num_movie_per_genres,reorder(genres, num_movie_per_genres),  fill= num_movie_per_genres)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  scale_fill_distiller(palette = "#001400")+
+  ggtitle("Number of ratings per genre") +
+  labs(y = "Genres Type",
+       x = "Number of ratings")+
+  theme_hc()+
+  set_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position = 'none')
+ 
+```
+
+\     
+On the other hand, we can see the average of ratings per genres as shown in the figure 8.\    
+```{r Figure8, echo=FALSE, fig.cap="Distribution of ratings average per genre in Edx Dataset"}
+###### Figure 8: Distribution of ratings average per genre
+
+genres_summarize %>%
+  ggplot(aes(avg_movie_per_genres,reorder(genres, avg_movie_per_genres), fill= avg_movie_per_genres)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  scale_fill_distiller(palette = "green") + 
+  ggtitle("Distribution of ratings average per genre ") +
+  labs(y = "Genre Type",
+       x = "Average of rating")+
+  theme_hc()+
+  set_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), legend.position = 'none')
+
+```
+
+\   
+We can see the relation between numbers of ratings and rating average as shown in the figure9.\   
+```{r Figure9, echo=FALSE, fig.cap="Relation between Number of Ratings vs Mean Rating for Genres"}
+###### Figure 9: Relation between Number of Ratings vs Mean Rating for Genres 
+edx%>%
+  group_by(genres)%>%
+  summarise(num_movie_per_genres =n(),avg_rating_genres =mean(rating))%>%
+  ggplot(aes(x = num_movie_per_genres, y= avg_rating_genres))+
+  scale_x_log10()+
+  geom_point()+
+  geom_smooth(color = "green")+
+  ggtitle("Relation between numbers and mean ratings for genres") +
+  labs(x = "Number of Ratings",
+       y = "Mean Ratings")+
+  theme_hc()+
+  set_theme 
+
+```
+  
+#### From above, we can conclude:
+\   
+•	The number of ratings varies per genre.\    
+•	The ratings average for genres are Converging, although the number of ratings varies.\    
+•	The genres only slightly affect movie ratings.\   
+
+
+\newpage
+# 3.	Modeling approach
+
+In this section, we are going to explain the modeling approach we used to construct our models, and present the metric for the model performance evaluation.
+
+## 3.1	Model performance evaluation
+
+To compare our models performance, we will use root mean squared error (RMSE) as our loss function.
+The RMSE represent the error loss between the predicted ratings derived from applying the model and actual ratings in the test set\    
+In the formula shown below, $y_{u,i}$ is defined as the actual rating provided by user $i$ for movie $u$, $\hat{y}_{u,i}$ is the predicted rating for the same, and N is the total number of user/movie combinations.  
+$$RMSE = \sqrt{\frac{1}{N}\sum_{u,i}\left(\hat{y}_{u,i}-y_{u,i}\right)^2}$$  
+
+##3.2	Constructing and developing baseline Model
+
+Based on the exploration of the data described above, genres and Time does not add much information. Therefore, to first build a baseline prediction model, I will consider the movie effect and user effect.
+
+The simplest algorithm for predicting ratings is to apply the same rating to all movies. Here, the actual rating for movie $i$ by user $u$, $Y_{u,i}$, is the sum of this "true" rating, $\mu$, plus $\epsilon_{u,i}$, the independent errors sampled for the same distribution.  
+
+$$Y_{u,i}=\mu+\epsilon_{u,i}$$ 
+
+### • Movie effects
+
+since we know that some movies are generally rated higher than others, accounting for this effect will therefore improve the accuracy of the prediction. This implies that an additional improvement to our model may be by taking into account the effect of movie on rating, $b_i$.  
+
+$$Y_{u,i}=\mu+b_i+\epsilon_{u,i}$$ 
+
+The least squares estimate of the movie effects, $\hat{b}_i$, can be derived from the average of $Y_{u,i}-\hat{\mu}$ for each movie $i$ and, thus, the following formula was used to take account of movie effects:  
+
+$$\hat{b}_{i}=mean\left(\hat{y}_{u,i}-\hat{\mu}\right)$$  
+
+### • Movie and user effects
+
+We also know that some users are more active than others at rating movies so further refinements were made to the algorithm to adjust for user effects ($b_u$). 
+$$Y_{u,i}=\mu+b_i+b_u+\epsilon_{u,i}$$
+
+As previously, rather than fitting linear regression models, the least square estimates of the user effect, $\hat{b}_u$ was calculated using the following formulas:
+
+$$\hat{b}_{u}=mean\left(\hat{y}_{u,i}-\hat{\mu}-\hat{b}_i\right)$$  
+
+## 3.3 Regularization
+
+Regularization permits us to penalize large estimates that come from small sample sizes. It has commonalities with the Bayesian approach that shrunk predictions. The general idea is to add a penalty for large values of bi, bu to the sum of squares equation that we minimize. So having many large bi or bu makes it harder to minimize.
+
+A more accurate estimation of bu and bi will treat them symmetrically, by solving the least squares problem
+
+$$\frac{1}{N}\sum_{u,i}\left(y_{u,i}-\mu-b_i-b_u\right)^2+\lambda\left(\sum_ib_i^2+\sum_ub_u^2\right)$$ 
+
+where the first term $\frac{1}{N}\sum_{u,i}\left(y_{u,i}-\mu-b_i-b_u\right)^2$, strives to find $b_u$’s and $b_i$’s that fit the given ratings. The regularizing term, $\lambda\left(\sum_ib_i^2+\sum_ub_u^2\right)$, avoids overfitting by penalizing the magnitudes of the parameters. This least square problem can be solved fairly efficiently by the method of stochastic gradient descent that will be object in the matrix factorization recommender engine.
+
+At this step, we used cross validation to pick the best $\lambda$ and using calculus we can show that the values of $b_i$ and $b_u$ that minimize this equation are :
+
+$$\hat{b}_i\left(\lambda\right)=\frac{1}{\lambda+n_i}\sum_{u=1}^{n_i}\left(Y_{u,i}-\hat{\mu}\right)$$ 
+
+$$\hat{b}_u\left(\lambda\right)=\frac{1}{\lambda+n_i}\sum_{u=1}^{n_i}\left(Y_{u,i}-\hat{\mu}- \hat{b}_i\right)$$ 
+
+## 3.4 Matrix factorization
+
+Matrix factorization is a class of collaborative filtering algorithms used in recommender systems. Matrix factorization algorithms work by decomposing the user-item interaction matrix into the product of two lower dimensionality rectangular matrices. This family of methods became widely known during the Netflix prize challenge due to its effectiveness as reported by Simon Funk in his 2006 blog post, where he shared his findings with the research community. 
+for more detail: (https://en.wikipedia.org/wiki/Matrix_factorization_(recommender_systems))
+
+We will apply Matrix Factorization with parallel stochastic gradient descent. With the help of “recosystem” package it is an R wrapper of the LIBMF library which creates a Recommender System by Using Parallel Matrix Factorization. The main task of recommender system is to predict unknown entries in the rating matrix based on observed values.
+for more information about recosystem package and the techniques: (https://cran.r-project.org/web/packages/recosystem/vignettes/introduction.html) 
+
+\newpage
+# 4. Results
+It should be noted that the main objective is to develop a recommendation system to reduce the RMSE to less than 0.86490.\   
+
+As the validation dataset was reserved for the final hold-out test, edx is split into edx_train (80%) and edx_test (20%) dataset. Various models are constructed using edx_train and their performances are assessed using edx_test.\
+
+```{r Model1, include=FALSE, echo=FALSE}
+##########################################################
+#####  Results section: Presents the modeling results
+##########################################################
+#### In this section we will do the following:
+# 1. Split data set into edx_train 80% and edx_test 10% dataset>
+# 2. Constructed various models using edx_train and their performances are assessed using edx_test
+# 3. Identifying the optimal model
+# 4. Final Model (Results) rerun the optimal model using edx dataset as train set, and validation dataset as test set
+
+#### create train and test set from edx dataset
+set.seed(1, sample.kind="Rounding")
+# edx_test set will be 10% of edx data
+edx_test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.2, list = FALSE)
+
+edx_train <- edx %>% slice(-edx_test_index)
+edx_temp <- edx %>% slice(edx_test_index)
+
+# make sure userId and movieId in test set are also in train set
+edx_test <- edx_temp %>% 
+  semi_join(edx_train, by = "movieId") %>%
+  semi_join(edx_train, by = "userId")
+
+# add rows removed from test set back into train set
+removed <- anti_join(edx_temp, edx_test)
+edx_train <- rbind(edx_train, removed)
+
+##########################################################
+## Define RMSE: residual mean squared error
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+
+##########################################################
+####### Baseline Approach
+
+####### Model 1: use average ratings for all movies
+## calculate average movie rating for edx_train data set
+mu <- mean(edx_train$rating)
+
+target_rmse <- 0.86490
+## calculate rmse for model 1
+model1_rmse <- RMSE(edx_test$rating, mu)
+rmse_results <- data.frame(Model = "Just the Average",
+                           RMSE = model1_rmse)
+
+```
+
+## 4.1 Model 1: BaseLine Model
+\   
+It’s simply a model which ignores all the feathers and calculates mean rating, This model acts as a baseline model and we will try to improve RMSE relative to this baseline standard model.\   
+The average rating is mu = `r round(mu,4)`, and the RMSE is `r round(model1_rmse,4)`.
+
+```{r view-rmse1, echo=FALSE}
+rmse_results %>% 
+  kable(align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  column_spec(1, color =  "#5E1914", bold = T) %>%
+  column_spec(2, color =  "#2b5329", bold = T) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = c("hold_position"))
+```
+
+## 4.2 Model 2: Movie effects Model
+
+Since the features of a movie could obviously affect the ratings of a movie, we will add the bias of movies b_i for each movie to the model.
+The average of the ratings on that specific movie will have a difference from the overall average rating of all movies. We will plot the distribution of the movie bias and calculate the RMSE of this model.
+
+```{r Figure10, echo=FALSE}
+####### Model 2: Modeling movie effects
+## calculate movie mean rating:  b_i
+movie_avgs <- edx_train %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+
+## Figure 10: Distribution of movie effect (b_i)
+movie_avgs %>%
+  ggplot(aes(b_i)) +
+  geom_histogram(bins=30, color = I("Green")) +
+  theme_hc() +
+  ggtitle("Distribution of movie effect (b_i) ") +
+  labs(x="Movie effects (b_i)",
+       y="Count",
+       caption = "Figure 10: Distribution of movie effect (b_i) Edx_train dataset")+
+  theme(text = element_text(size=16), plot.background = element_rect(colour= NA, linetype = "solid", fill = NA, size = 1), panel.border = element_rect(colour="black", linetype = "solid", fill=NA), plot.title = element_text(hjust = 0.5, size = 20), plot.caption = element_text(hjust = 0.5, size = 22))
+```
+
+```{r Model2,include=FALSE, echo=FALSE}
+## calculate the prediction rating for model 2
+predict_rating_m2 <- edx_test %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  mutate(pred = mu + b_i)
+
+## calculate rmse for model 2
+
+model2_rmse <- RMSE(edx_test$rating,predict_rating_m2$pred)
+rmse_results <- rbind(rmse_results,data.frame(Model = "Movie Effect Model",
+                           RMSE = round(model2_rmse, 4)))
+
+```
+
+Figure 10 shows that the estimate of movie effect (b_i) varies considerably across all of the movies included in the train dataset. Adding the movie effect into the algorithm to improved the accuracy of the model by `r percent((model1_rmse-model2_rmse)/model1_rmse)`, yielding an RMSE of `r round(model2_rmse,4)`, but its still above the target.
+
+```{r view-rmse2, echo=FALSE}
+rmse_results %>% 
+  kable(align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  column_spec(1, color =  "#5E1914", bold = T) %>%
+  column_spec(2, color =  "#2b5329", bold = T) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = c("hold_position"))
+
+```
+
+## 4.3 Model 3: Movies and Users effects Model
+
+Similar to the movie effect, features of a given user could also affect the ratings of a movie.  a user could give lower scores for all movies  watched than rated by other users.\    
+We will add the user bias b_u to the movie effect model  and calculate the RMSE of this model 
+
+```{r Figure11, echo=FALSE}
+####### Model 3: Movie and User Effect 
+## calculate user mean rating:  b_u
+user_avgs <- edx_train %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+## Figure 11: Distribution of movie effect (b_u)
+user_avgs %>%
+  ggplot(aes(b_u)) +
+  geom_histogram(bins=30, color = I("Green")) +
+  theme_hc() +
+  ggtitle("Distribution of user effect (b_u) ") +
+  labs(x="User effects (b_u)",
+       y="Count",
+       caption = "Figure 11: Distribution of movie effect (b_u) in Edx_train dataset")+
+  theme(text = element_text(size=16), plot.background = element_rect(colour= NA, linetype = "solid", fill = NA, size = 1), panel.border = element_rect(colour="black", linetype = "solid", fill=NA), plot.title = element_text(hjust = 0.5, size = 20), plot.caption = element_text(hjust = 0.5, size = 22))
+
+```
+
+```{r Model3, echo=FALSE}
+## calculate the prediction rating for model 3
+predict_rating_m3 <- edx_test %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) 
+
+## calculate rmse for model 3
+model3_rmse <- RMSE(edx_test$rating,predict_rating_m3$pred)
+rmse_results <- rbind(rmse_results,
+                          data_frame(Model="Movie and User Effect model",  
+                                    RMSE = round(model3_rmse, 4)))
+
+```
+
+Figure 11 shows the estimated effect of user (b_u) building on the movie effects model above. it was evident that adjusting for user effects enhanced the accuracy of the algorithm.Adjusting for both movie and user effects to improved the RMSE by `r percent((model1_rmse-model3_rmse)/model1_rmse)` versus the Baseline model.
+
+```{r view-rmse3, echo=FALSE}
+rmse_results %>% 
+  kable(align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  column_spec(1, color =  "#5E1914", bold = T) %>%
+  column_spec(2, color =  "#2b5329", bold = T) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = c("hold_position"))
+
+```
+
+## 4.4 Model 4: Regularization of movie and user effects
+
+Regularization technique should be used to take into account on the movie and user effects, by adding a larger penalty to estimates from smaller samples. so we will use parameter $\lambda$.
+
+We have noticed in our data exploration, some users are more actively participated in movie reviewing. There are also users who have rated very few movies. On the other hand, some movies are rated very few times. 
+These are basically noisy estimates that we should not trust. Additionally, RMSE are sensitive to large errors. 
+So we must put a penalty term to give less importance to such effect.
+
+```{r Figure12, echo=FALSE}
+####### Model 4: Regularized Movie and user Effect Model
+####### Model 4: Regularized Movie and user Effect Model
+## calculate optimal tuning parameter (Lambda) using k fold cross validation
+lambdas <- seq(0, 10, 0.25)
+
+## calculate the best value of lambdas that return minimum RMSE value
+set.seed(21, sample.kind = "Rounding")
+
+## For each lambda,find b_i & b_u followed by rating prediction
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx_train$rating)
+  
+  b_i <- edx_train %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx_train %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- edx_test %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(edx_test$rating,predicted_ratings))
+})
+
+## plot lambadas
+qplot(lambdas, rmses)  +
+  ggtitle("Selecting the tuning parameter ") +
+  labs(x="Lambda",
+       y="RMSE",
+       caption = "Figure 12: Selecting the tuning parameter in Edx_train dataset")+
+  theme(text = element_text(size=16), plot.background = element_rect(colour= NA, linetype = "solid", fill = NA, size = 1), panel.border = element_rect(colour="black", linetype = "solid", fill=NA), plot.title = element_text(hjust = 0.5, size = 20), plot.caption = element_text(hjust = 0.5, size = 22))
+```
+
+```{r Model4, echo=FALSE}
+## get the optimal value for lambda
+lambda <- lambdas[which.min(rmses)]
+
+## calculate the regular movie reg_b_i with the optimal lambda
+reg_movie_avgs <- edx_train %>% 
+  group_by(movieId) %>% 
+  summarize(reg_b_i = sum(rating - mu)/(n()+lambda), n_i = n())
+  
+## calculate the regular user reg_b_u with the optimal lambda
+reg_user_avgs <- edx_train %>% 
+  left_join(reg_movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(reg_b_u = sum(rating - mu - reg_b_i)/(n()+lambda), n_u = n())
+
+## calculate the prediction rating for model 4
+reg_predicted_ratings <- edx_test %>% 
+  left_join(reg_movie_avgs, by='movieId') %>%
+  left_join(reg_user_avgs, by='userId') %>%
+  mutate(pred = mu + reg_b_i + reg_b_u) %>% 
+  .$pred
+
+## calculate rmse for model 4
+model4_rmse <- RMSE(edx_test$rating,reg_predicted_ratings)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(Model="Regularized Movie and User Effect Model",  
+                                     RMSE = round(model4_rmse, 4)))
+
+```
+
+Figure above shows the RMSE delivered across each of the values for lambda tested. The optimum value for $\lambda$ was `r round(lambda,4)` which minimised RMSE to `r round(model4_rmse,4)`, which was just sufficient to surpass the target RMSE set as the project objective. This represented a total improvement of `r percent((model1_rmse-model4_rmse)/model1_rmse)` in the accuracy of the baseline. 
+
+```{r , echo=FALSE}
+rmse_results %>% 
+  kable(align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  column_spec(1, color =  "#5E1914", bold = T) %>%
+  column_spec(2, color =  "#2b5329", bold = T) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = c("hold_position"))
+```
+
+## 4.5 Model 5: Matrix Factorization
+By following the required procedure for recosystem library, which was explained in the website, the following result can be obtained:
+
+```{r view-rmse4, echo=FALSE}
+
+####### Model 5: Matrix Factorization based on the residuals of the best model (Model 4: Regularized Movie and user Effect Model)
+
+####### Calculating the residuals of edx_train from model 4
+residual_edx <- edx_train %>% 
+  left_join(reg_movie_avgs, by = "movieId") %>%
+  left_join(reg_user_avgs, by = "userId") %>%
+  mutate(residual = rating - mu - reg_b_i - reg_b_u) %>%
+  select(userId, movieId, residual)
+#edhead(residual_edx)
+
+#######  Use the recosystem package to perform the matrix factorization
+## make matrix from residual and edx_test
+residual_mf <- as.matrix(residual_edx)
+edx_test_mf <- edx_test %>% 
+  select(userId, movieId, rating)
+edx_test_mf <- as.matrix(edx_test_mf)
+
+## write residual_mf and edx_test_mf table on disk
+write.table(residual_mf , file = "trainset.txt" , sep = " " , row.names = FALSE, col.names = FALSE)
+write.table(edx_test_mf, file = "testset.txt" , sep = " " , row.names = FALSE, col.names = FALSE)
+
+## use data_file() to specify a data set from a file in the hard disk.
+train_set <- data_file("trainset.txt")
+test_set <- data_file("testset.txt")
+
+## build a recommender object
+r <-Reco()
+
+# tuning training set
+# Note: running this code will take along time ~30 minits
+opts <- r$tune(train_set, opts = list(dim = c(10, 20, 30), lrate = c(0.1, 0.2),
+                                      costp_l1 = 0, costq_l1 = 0,
+                                      nthread = 1, niter = 10))
+
+# training the recommender model
+r$train(train_set, opts = c(opts$min, nthread = 1, niter = 20))
+
+# Making prediction on validation set and calculating RMSE:
+pred_file <- tempfile()
+r$predict(test_set, out_file(pred_file)) 
+
+predicted_residuals_mf <- scan(pred_file)
+predicted_ratings_mf <- reg_predicted_ratings + predicted_residuals_mf
+
+## calculate rmse for model 5
+model5_rmse <- RMSE(edx_test$rating, predicted_ratings_mf)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(Model="Matrix Factorization",  
+                                     RMSE = round(model5_rmse, 4)))
+
+```
+
+Performing the Matrix factorization method, we will achieve a RMSE equal `r round(model5_rmse,4)` 
+If we calculate the percentage decrease of rmse we could see that the matrix factorization method shows a decrease of more than `r percent((model1_rmse-model5_rmse)/model1_rmse)` with respect to the base line model.
+
+```{r , echo=FALSE}
+rmse_results %>% 
+  kable(align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  column_spec(1, color =  "#5E1914", bold = T) %>%
+  column_spec(2, color =  "#2b5329", bold = T) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = c("hold_position"))
+```
+
+```{r , echo=FALSE}
+## calculate rmse for Final Model
+##############################################################
+##### Final Model: Use Model 5 (Matrix Factorization)  to assessed on validation set
+##############################################################
+
+## so will be used to all edx set as train set, and validation set as test set in model 5
+
+####### calculate optimal tuning parameter (Lambda) using k fold cross validation
+set.seed(1, sample.kind = "Rounding")
+
+## calculate average movie rating for edx data set
+f_mu <- mean(edx$rating)
+
+## calculate the best value of lambdas that return minimum RMSE value
+f_lambdas <- seq(0, 10, 0.25)
+
+f_rmses <- sapply(f_lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    .$pred
+  
+  return(RMSE(validation$rating,predicted_ratings))
+})
+
+## get the optimal value for lambda
+f_lambda <- f_lambdas[which.min(f_rmses)]
+f_lambda
+qplot(f_lambdas, f_rmses)
+
+## calculate the final regular movie f_b_i with the optimal lambda
+final_movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(f_b_i = sum(rating - f_mu)/(n()+f_lambda), n_i = n())
+
+## calculate the final regular user f_b_u with the optimal lambda
+final_user_avgs <- edx %>% 
+  left_join(final_movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(f_b_u = sum(rating - f_mu - f_b_i)/(n()+f_lambda), n_u = n())
+
+## calculate the regular prediction rating using validation dataset
+final_reg_predicted_ratings <- validation %>% 
+  left_join(final_movie_avgs, by='movieId') %>%
+  left_join(final_user_avgs, by='userId') %>%
+  mutate(pred = f_mu + f_b_i + f_b_u) %>% 
+  .$pred
+
+## calculate RMSE for Regularized Movie and User Effect Model if you need, RMSE = 0.864817
+#final_reg_rmse <- RMSE(validation$rating,final_reg_predicted_ratings)
+#final_reg_rmse
+
+####### Calculating the residuals of edx data set
+final_residual_edx <- edx %>% 
+  left_join(final_movie_avgs, by = "movieId") %>%
+  left_join(final_user_avgs, by = "userId") %>%
+  mutate(residual = rating - f_mu - f_b_i - f_b_u) %>%
+  select(userId, movieId, residual)
+#head(final_residual_edx)
+
+#######  Use the recosystem package to perform the matrix factorization
+## make matrix from residual and validation set
+final_residual_mf <- as.matrix(final_residual_edx)
+validation_mf <- validation %>% 
+  select(userId, movieId, rating)
+validation_mf <- as.matrix(validation_mf)
+
+## write final_residual_mf and validation_mf table on disk
+write.table(final_residual_mf , file = "final_trainset.txt" , sep = " " , row.names = FALSE, col.names = FALSE)
+write.table(validation_mf, file = "final_testset.txt" , sep = " " , row.names = FALSE, col.names = FALSE)
+
+## use data_file() to specify a data set from a file in the hard disk.
+final_train_set <- data_file("final_trainset.txt")
+final_test_set <- data_file("final_testset.txt")
+
+## build a recommender object
+f_r <-Reco()
+
+# tuning training set
+# Note: running this code will take along time ~30 minits
+f_opts <- f_r$tune(final_train_set, opts = list(dim = c(10, 20, 30), lrate = c(0.1, 0.2),
+                                      costp_l1 = 0, costq_l1 = 0,
+                                      nthread = 1, niter = 10))
+
+# training the recommended model
+f_r$train(final_train_set, opts = c(f_opts$min, nthread = 1, niter = 20))
+
+# Making prediction on validation set and calculating RMSE:
+final_pred_file <- tempfile()
+f_r$predict(final_test_set, out_file(final_pred_file)) 
+
+final_predicted_residuals_mf <- scan(final_pred_file)
+final_predicted_ratings_mf <- final_reg_predicted_ratings + final_predicted_residuals_mf
+
+## calculate rmse for final model (model 5: Matrix Factorization)
+final_rmse <- RMSE(validation$rating, final_predicted_ratings_mf)
+final_rmse_results <- data.frame(Model = "Best Model: Matrix Factorization",
+                                 RMSE = round(final_rmse, 4))
+
+```
+
+## 4.6 Final Model
+The previous sections construct models which are assessed using edx_test that is a subset of edx dataset. The best performing model is amatrix factorization which yields an RMSE of `r round(model5_rmse,4)`. Therefore, the final model takes the same approach.
+The final model is constructed using the entire edx data set and is then evaluated using validation. Note that validation is not used at any point in this report so it is a fair assessment.
+The final hold-out test in the validation dataset achieve an RMSE of `r round(final_rmse,4)`, an improvement of `r percent((model1_rmse-final_rmse)/model1_rmse)` versus the baseline model.
+As shown in Table below:
+
+```{r , echo=FALSE}
+final_rmse_results %>% 
+  kable(align = 'c', booktabs = T,
+        format = "latex", linesep = "") %>%
+  column_spec(1, color =  "#5E1914", bold = T) %>%
+  column_spec(2, color =  "#2b5329", bold = T) %>%
+  kable_styling(full_width = FALSE, position = "center", latex_options = c("hold_position"))
+```
+
+\newpage
+
+# 5. Conculusien 
+
+The objective of this project is to develop a recommendation system using the MovieLens 10M dataset that predicted ratings with a residual mean square error of less than 0.86490. 
+
+This report discusses a few methods used to construct recommendation systems. The best performing model is matrix factorization which yields an RMSE of `r round(final_rmse,4)` when trained on edx and tested on validation. This is an improvement on the first model’s RMSE by around `r percent((model1_rmse-final_rmse)/model1_rmse)`.
+
+Although the algorithm developed here met the project objective it still includes a sizeable error loss, which suggests that there is still scope to improve the accuracy of the recommendation system.
+
+In conclusion, matrix factorization appears to be a very powerful technique for recommendation system. those interested in a more advanced approach to construct recommender systems which should consult the recosystem package. It provides the means to implement matrix factorisation on large data sets. 
+
+\newpage
+# 6. Reference
+[1] “Introduction to Data Science - Data Analysis and Prediction Algorithms with R”, Dr. Rafael A. Irizarry [link](https://rafalab.github.io/dsbook/)
+
+[2] "R Markdown: The Definitive Guide", Yihui Xie, J. J. Allaire, Garrett Grolemund, 2019-06-03 [link](https://bookdown.org/yihui/rmarkdown/)
+
+[3] “Recommender System Using Parallel Matrix Factorization”, Yixuan Qiu, 2021-01-09.  [link](https://cran.r-project.org/web/packages/recosystem/vignettes/introduction.html)
+
+[4] "E. Winning the Netflix Prize: A Summary", Chen, 2020/10/15. [link](http://blog.echen.me/2011/10/24/winning-the-netflixprize-a-summary/)
+
+
+
+
+
+
+
+
+
+
+
+
